@@ -3,6 +3,57 @@ use serialport as serial;
 
 static MK3_SERIAL_NUMBER: &str = "HQ19125YEZ6";
 
+#[derive(Debug)]
+struct Mk2Frame;
+
+#[derive(Debug)]
+struct BusFrame;
+
+#[derive(Debug)]
+enum Frame {
+    InvalidFrame,
+    Mk2Frame(Mk2Frame),
+    BusFrame(BusFrame),
+}
+
+fn read_frame(port: &mut Box<dyn serial::SerialPort>) -> Frame {
+    let mut length_buf = [0u8; 1];
+
+    // read length
+    match port.read_exact(&mut length_buf) {
+        Ok(()) => {
+            let length: usize = length_buf[0] as usize & 0x7f;
+            let mut payload = vec![0u8; length + 1];
+
+            match port.read_exact(&mut payload) {
+                Ok(()) => {
+                    // calculate checksum
+                    let mut sum = length_buf[0];
+                    for v in payload.iter() {
+                        sum = sum.wrapping_add(*v);
+                    }
+                    if sum == 0 {
+                        // checksum ok, process frame
+                        match payload[0] {
+                            0xff => {
+                                Frame::Mk2Frame(Mk2Frame { })
+                            },
+                            _ => {
+                                Frame::BusFrame(BusFrame { })
+                            }
+                        }    
+                    } else {
+                        // checksum failed
+                        Frame::InvalidFrame
+                    }
+                },
+                Err(_) => Frame::InvalidFrame
+            }
+        },
+        Err(_) => Frame::InvalidFrame
+    }
+}
+
 fn main() {
     // Find interface matching serial number
     let port_name = serial::available_ports()
@@ -26,10 +77,15 @@ fn main() {
         flow_control: serial::FlowControl::None,
         parity: serial::Parity::None,
         stop_bits: serial::StopBits::One,
-        timeout: time::Duration::from_millis(1000),
+        timeout: time::Duration::from_millis(2000),
     };
     
     // open the port
-    let _port = serial::open_with_settings(&port_name, &settings)
+    let mut port = serial::open_with_settings(&port_name, &settings)
         .expect("unable to open port");
+
+    loop {
+        let frame = read_frame(&mut port);
+        println!("{:?}", frame);
+    }
 }
