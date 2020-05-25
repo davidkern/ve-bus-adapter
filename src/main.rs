@@ -20,12 +20,34 @@ enum Mk2Frame {
 }
 
 #[derive(Debug)]
+enum ACState {
+    Unknown,
+    Down,
+    Startup,
+    Off,
+    Slave,
+    InvertFull,
+    InvertHalf,
+    InvertAES,
+    PowerAssist,
+    Bypass,
+    StateCharge,
+}
+
+#[derive(Debug)]
 enum BusFrame {
     Unknown,
     DCInfo {
         voltage: f32,
         inverter_current: f32,
         charger_current: f32
+    },
+    ACInfo {
+        state: ACState,
+        mains_voltage: f32,
+        mains_current: f32,
+        inverter_voltage: f32,
+        inverter_current: f32,
     }
 }
 
@@ -71,9 +93,42 @@ fn read_bus_frame(bytes: &Vec<u8>) -> BusFrame {
                     BusFrame::DCInfo {
                         voltage: u16::from_le_bytes(voltage_bytes) as f32 / 100.0,
                         inverter_current: u32::from_le_bytes(inverter_current_bytes) as f32 / 10.0,
-                        charger_current: u32::from_le_bytes(charger_current_bytes) as f32 / 100.0,
+                        charger_current: u32::from_le_bytes(charger_current_bytes) as f32 / 10.0,
                     }
                 },
+                0x08 => {
+                    let mut mains_voltage_bytes: [u8; 2] = Default::default();
+                    mains_voltage_bytes.copy_from_slice(&bytes[6..8]);
+
+                    let mut mains_current_bytes: [u8; 2] = Default::default();
+                    mains_current_bytes.copy_from_slice(&bytes[8..10]);
+
+                    let mut inverter_voltage_bytes: [u8; 2] = Default::default();
+                    inverter_voltage_bytes.copy_from_slice(&bytes[10..12]);
+
+                    let mut inverter_current_bytes: [u8; 2] = Default::default();
+                    inverter_current_bytes.copy_from_slice(&bytes[12..14]);
+
+                    BusFrame::ACInfo {
+                        state: match bytes[4] {
+                            0x00 => ACState::Down,
+                            0x01 => ACState::Startup,
+                            0x02 => ACState::Off,
+                            0x03 => ACState::Slave,
+                            0x04 => ACState::InvertFull,
+                            0x05 => ACState::InvertHalf,
+                            0x06 => ACState::InvertAES,
+                            0x07 => ACState::PowerAssist,
+                            0x08 => ACState::Bypass,
+                            0x09 => ACState::StateCharge,
+                            _ => ACState::Unknown,
+                        },
+                        mains_voltage: u16::from_le_bytes(mains_voltage_bytes) as f32 / 100.0,
+                        mains_current: u16::from_le_bytes(mains_current_bytes) as f32 / 100.0,
+                        inverter_voltage: u16::from_le_bytes(inverter_voltage_bytes) as f32 / 100.0,
+                        inverter_current: u16::from_le_bytes(inverter_current_bytes) as f32 / 100.0,
+                    }
+                }
                 _ => {
                     println!("Unknown Bus Frame: {:?}", bytes);
                     BusFrame::Unknown
@@ -141,6 +196,11 @@ fn request_dc_info(port: &mut Box<dyn serial::SerialPort>) {
     write_frame(port, &vec![0x46, 0x00]);
 }
 
+fn request_ac_l1_info(port: &mut Box<dyn serial::SerialPort>) {
+    println!("Requesting AC L1 data");
+    write_frame(port, &vec![0x46, 0x01]);
+}
+
 fn main() {
     // Find interface matching serial number
     let port_name = serial::available_ports()
@@ -176,5 +236,6 @@ fn main() {
         println!("{:?}", read_frame(&mut port));
         println!("{:?}", read_frame(&mut port));
         request_dc_info(&mut port);
+        request_ac_l1_info(&mut port);
     }
 }
