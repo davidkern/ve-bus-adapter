@@ -1,7 +1,12 @@
 use core::time;
+use influent;
+use influent::client::Client;
+use influent::measurement::{Measurement, Value};
 use serialport as serial;
+use std::fmt;
 
 static MK3_SERIAL_NUMBER: &str = "HQ19125YEZ6";
+const MEASUREMENT_INTERVAL: i32 = 5;
 
 #[derive(Debug)]
 enum Mk2Mode {
@@ -34,20 +39,38 @@ enum ACState {
     StateCharge,
 }
 
+impl fmt::Display for ACState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            ACState::Unknown => { write!(f, "unknown") },
+            ACState::Down => { write!(f, "down") },
+            ACState::Startup => { write!(f, "startup") },
+            ACState::Off => { write!(f, "off") },
+            ACState::Slave => { write!(f, "slave") },
+            ACState::InvertFull => { write!(f, "invert_full") },
+            ACState::InvertHalf => { write!(f, "invert_half") },
+            ACState::InvertAES => { write!(f, "invert_aes") },
+            ACState::PowerAssist => { write!(f, "power_assist") },
+            ACState::Bypass => { write!(f, "bypass") },
+            ACState::StateCharge => { write!(f, "state_charge") },
+        }
+    }
+}
+
 #[derive(Debug)]
 enum BusFrame {
     Unknown,
     DCInfo {
-        voltage: f32,
-        inverter_current: f32,
-        charger_current: f32
+        voltage: f64,
+        inverter_current: f64,
+        charger_current: f64
     },
     ACInfo {
         state: ACState,
-        mains_voltage: f32,
-        mains_current: f32,
-        inverter_voltage: f32,
-        inverter_current: f32,
+        mains_voltage: f64,
+        mains_current: f64,
+        inverter_voltage: f64,
+        inverter_current: f64,
     }
 }
 
@@ -91,9 +114,9 @@ fn read_bus_frame(bytes: &Vec<u8>) -> BusFrame {
                     charger_current_bytes[..3].copy_from_slice(&bytes[11..14]);
 
                     BusFrame::DCInfo {
-                        voltage: u16::from_le_bytes(voltage_bytes) as f32 / 100.0,
-                        inverter_current: u32::from_le_bytes(inverter_current_bytes) as f32 / 10.0,
-                        charger_current: u32::from_le_bytes(charger_current_bytes) as f32 / 10.0,
+                        voltage: u16::from_le_bytes(voltage_bytes) as f64 / 100.0,
+                        inverter_current: u32::from_le_bytes(inverter_current_bytes) as f64 / 10.0,
+                        charger_current: u32::from_le_bytes(charger_current_bytes) as f64 / 10.0,
                     }
                 },
                 0x08 => {
@@ -123,10 +146,10 @@ fn read_bus_frame(bytes: &Vec<u8>) -> BusFrame {
                             0x09 => ACState::StateCharge,
                             _ => ACState::Unknown,
                         },
-                        mains_voltage: u16::from_le_bytes(mains_voltage_bytes) as f32 / 100.0,
-                        mains_current: u16::from_le_bytes(mains_current_bytes) as f32 / 100.0,
-                        inverter_voltage: u16::from_le_bytes(inverter_voltage_bytes) as f32 / 100.0,
-                        inverter_current: u16::from_le_bytes(inverter_current_bytes) as f32 / 100.0,
+                        mains_voltage: u16::from_le_bytes(mains_voltage_bytes) as f64 / 100.0,
+                        mains_current: u16::from_le_bytes(mains_current_bytes) as f64 / 100.0,
+                        inverter_voltage: u16::from_le_bytes(inverter_voltage_bytes) as f64 / 100.0,
+                        inverter_current: u16::from_le_bytes(inverter_current_bytes) as f64 / 100.0,
                     }
                 }
                 _ => {
@@ -202,6 +225,14 @@ fn request_ac_l1_info(port: &mut Box<dyn serial::SerialPort>) {
 }
 
 fn main() {
+    let credentials = influent::client::Credentials {
+        username: "",
+        password: "",
+        database: "hab",
+    };
+    let hosts = vec!["http://localhost:8086"];
+    let db = influent::create_client(credentials, hosts);
+    
     // Find interface matching serial number
     let port_name = serial::available_ports()
         .expect("failed to list ports")
@@ -231,11 +262,56 @@ fn main() {
     let mut port = serial::open_with_settings(&port_name, &settings)
         .expect("unable to open port");
 
+    let mut frame_count = 0;
+
     loop {
-        println!("{:?}", read_frame(&mut port));
-        println!("{:?}", read_frame(&mut port));
-        println!("{:?}", read_frame(&mut port));
-        request_dc_info(&mut port);
-        request_ac_l1_info(&mut port);
+        match read_frame(&mut port) {
+            Frame::BusFrame(frame) => {
+                match frame {
+                    BusFrame::ACInfo {
+                        state,
+                        mains_voltage,
+                        mains_current,
+                        inverter_voltage,
+                        inverter_current
+                    } => {
+                        let mut measurement = Measurement::new("multiplus_ac");
+                        let state_str = state.to_string();
+                        measurement.add_field("state", Value::String(&state_str));
+                        measurement.add_field("mains_voltage", Value::Float(mains_voltage));
+                        measurement.add_field("mains_current", Value::Float(mains_current));
+                        measurement.add_field("inverter_voltage", Value::Float(inverter_voltage));
+                        measurement.add_field("inverter_current", Value::Float(inverter_current));
+
+                        db.write_one(measurement, Some(influent::client::Precision::Seconds))
+                            .expect("writing multiplus_ac measurement");                        
+                    },
+
+                    BusFrame::DCInfo {
+                        voltage,
+                        inverter_current,
+                        charger_current                
+                    } => {
+                        let mut measurement = Measurement::new("multiplus_dc");
+                        measurement.add_field("voltage", Value::Float(voltage));
+                        measurement.add_field("inverter_current", Value::Float(inverter_current));
+                        measurement.add_field("charger_current", Value::Float(charger_current));
+
+                        db.write_one(measurement, Some(influent::client::Precision::Seconds))
+                            .expect("writing multiplus_dc measurement");
+                    },
+                    _ => {}
+                }
+            },
+            Frame::Mk2Frame(_) => {
+                frame_count += 1;                
+                if frame_count > MEASUREMENT_INTERVAL {
+                    frame_count = 0;
+                    request_ac_l1_info(&mut port);
+                    request_dc_info(&mut port);
+                }
+            },
+            _ => { },
+        };
     }
 }
