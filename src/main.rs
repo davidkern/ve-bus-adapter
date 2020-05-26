@@ -7,6 +7,10 @@ use std::fmt;
 
 static MK3_SERIAL_NUMBER: &str = "HQ19125YEZ6";
 const MEASUREMENT_INTERVAL: i32 = 5;
+const MAX_AC_SHORE_CURRENT: f64 = 75.0;
+const MAX_AC_INVERTER_CURRENT: f64 = 75.0;
+const MAX_DC_CHARGE_CURRENT: f64 = 200.0;
+const MAX_DC_INVERTER_CURRENT: f64 = 750.0;
 
 #[derive(Debug)]
 enum Mk2Mode {
@@ -275,16 +279,22 @@ fn main() {
                         inverter_voltage,
                         inverter_current
                     } => {
-                        let mut measurement = Measurement::new("multiplus_ac");
-                        let state_str = state.to_string();
-                        measurement.add_field("state", Value::String(&state_str));
-                        measurement.add_field("mains_voltage", Value::Float(mains_voltage));
-                        measurement.add_field("mains_current", Value::Float(mains_current));
-                        measurement.add_field("inverter_voltage", Value::Float(inverter_voltage));
-                        measurement.add_field("inverter_current", Value::Float(inverter_current));
-
-                        db.write_one(measurement, Some(influent::client::Precision::Seconds))
-                            .expect("writing multiplus_ac measurement");                        
+                        if mains_current > MAX_AC_SHORE_CURRENT {
+                            println!("AC shore current '{}' out of range", mains_current);
+                        } else if inverter_current > MAX_AC_INVERTER_CURRENT {
+                            println!("AC inverter current '{}' out of range", inverter_current);
+                        } else {
+                            let mut measurement = Measurement::new("multiplus_ac");
+                            let state_str = state.to_string();
+                            measurement.add_field("state", Value::String(&state_str));
+                            measurement.add_field("mains_voltage", Value::Float(mains_voltage));
+                            measurement.add_field("mains_current", Value::Float(mains_current));
+                            measurement.add_field("inverter_voltage", Value::Float(inverter_voltage));
+                            measurement.add_field("inverter_current", Value::Float(inverter_current));
+    
+                            db.write_one(measurement, Some(influent::client::Precision::Seconds))
+                                .expect("writing multiplus_ac measurement");                            
+                        }
                     },
 
                     BusFrame::DCInfo {
@@ -292,13 +302,19 @@ fn main() {
                         inverter_current,
                         charger_current                
                     } => {
-                        let mut measurement = Measurement::new("multiplus_dc");
-                        measurement.add_field("voltage", Value::Float(voltage));
-                        measurement.add_field("inverter_current", Value::Float(inverter_current));
-                        measurement.add_field("charger_current", Value::Float(charger_current));
-
-                        db.write_one(measurement, Some(influent::client::Precision::Seconds))
-                            .expect("writing multiplus_dc measurement");
+                        if inverter_current > MAX_DC_INVERTER_CURRENT {
+                            println!("DC inverter current '{}' out of range", inverter_current);
+                        } else if charger_current > MAX_DC_CHARGE_CURRENT {
+                            println!("DC charge current '{}' out of range", charger_current);
+                        } else {
+                            let mut measurement = Measurement::new("multiplus_dc");
+                            measurement.add_field("voltage", Value::Float(voltage));
+                            measurement.add_field("inverter_current", Value::Float(inverter_current));
+                            measurement.add_field("charger_current", Value::Float(charger_current));
+    
+                            db.write_one(measurement, Some(influent::client::Precision::Seconds))
+                                .expect("writing multiplus_dc measurement");    
+                        }
                     },
                     _ => {}
                 }
