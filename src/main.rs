@@ -7,6 +7,7 @@ use std::fmt;
 
 static MK3_SERIAL_NUMBER: &str = "HQ19125YEZ6";
 const MEASUREMENT_INTERVAL: i32 = 5;
+const MAX_CONSECUTIVE_INVALID_FRAME_COUNT: i32 = 3;
 const MAX_AC_SHORE_CURRENT: f64 = 75.0;
 const MAX_AC_INVERTER_CURRENT: f64 = 75.0;
 const MAX_DC_CHARGE_CURRENT: f64 = 200.0;
@@ -266,11 +267,13 @@ fn main() {
     let mut port = serial::open_with_settings(&port_name, &settings)
         .expect("unable to open port");
 
+    let mut consecutive_invalid_frame_count = 0;
     let mut frame_count = 0;
 
     loop {
         match read_frame(&mut port) {
             Frame::BusFrame(frame) => {
+                consecutive_invalid_frame_count = 0;
                 match frame {
                     BusFrame::ACInfo {
                         state,
@@ -320,6 +323,7 @@ fn main() {
                 }
             },
             Frame::Mk2Frame(_) => {
+                consecutive_invalid_frame_count = 0;
                 frame_count += 1;                
                 if frame_count > MEASUREMENT_INTERVAL {
                     frame_count = 0;
@@ -327,7 +331,12 @@ fn main() {
                     request_dc_info(&mut port);
                 }
             },
-            _ => { },
+            Frame::InvalidFrame => {
+                consecutive_invalid_frame_count += 1;
+                if consecutive_invalid_frame_count > MAX_CONSECUTIVE_INVALID_FRAME_COUNT {
+                    panic!("Too many consecutive invalid frames, restarting.");
+                }
+            }
         };
     }
 }
