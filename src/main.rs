@@ -235,7 +235,7 @@ fn main() {
         password: "",
         database: "hab",
     };
-    let hosts = vec!["http://localhost:8086"];
+    let hosts = vec!["http://habctl.hab.mju.io:8086"];
     let db = influent::create_client(credentials, hosts);
     
     // Find interface matching serial number
